@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Cursor that handles AutoReconnect, NetworkTimeout & NotMasterError problems
+Cursor that handles AutoReconnect, NetworkTimeout & NotPrimaryError problems
 when iterating over values and replicate set elections happen.
 (node crash or shutdown)
 
@@ -28,7 +28,7 @@ import time
 from pymongo.cursor import Cursor
 from pymongo.errors import AutoReconnect
 from pymongo.errors import NetworkTimeout
-from pymongo.errors import NotMasterError
+from pymongo.errors import NotPrimaryError
 
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 15
@@ -40,7 +40,7 @@ class TooManyRetries(Exception):
     pass
 
 
-class PyMongo3DurableCursor(Cursor):
+class PyMongo4DurableCursor(Cursor):
     """Cursor that on AutoReconnect error waits and spawns a new Cursor,
     keeping track of previous location in iteration.
     """
@@ -57,7 +57,7 @@ class PyMongo3DurableCursor(Cursor):
         if self.iterator_count:
             kwargs['skip'] = kwargs.get('skip', 0) + self.iterator_count
 
-        super(PyMongo3DurableCursor, self).__init__(*args, **kwargs)
+        super(PyMongo4DurableCursor, self).__init__(*args, **kwargs)
 
     def next(self):
         """If Autoreconnect problems, wait and spawn new cursor,
@@ -67,11 +67,11 @@ class PyMongo3DurableCursor(Cursor):
             return self.retry_cursor.next()
 
         try:
-            next_item = super(PyMongo3DurableCursor, self).next()
+            next_item = super(PyMongo4DurableCursor, self).next()
             self.iterator_count += 1
             self.retry_attempt = 0  # Works (again), reset counter
             return next_item
-        except (AutoReconnect, NetworkTimeout, NotMasterError) as exception:
+        except (AutoReconnect, NetworkTimeout, NotPrimaryError) as exception:
             self.retry_attempt += 1
             if self.retry_attempt > MAX_ATTEMPTS:
                 raise TooManyRetries('Failed too many times.')
@@ -82,6 +82,6 @@ class PyMongo3DurableCursor(Cursor):
                                                   MAX_ATTEMPTS))
             self.retry_kwargs['retry_attempt'] = self.retry_attempt
             self.retry_kwargs['iterator_count'] = self.iterator_count
-            self.retry_cursor = PyMongo3DurableCursor(*self.retry_args,
+            self.retry_cursor = PyMongo4DurableCursor(*self.retry_args,
                                                       **self.retry_kwargs)
             return self.retry_cursor.next()
