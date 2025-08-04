@@ -21,6 +21,12 @@ var/
 *.egg
 .eggs/
 
+# Virtualenv
+.venv/
+
+# Pytest cache
+.pytest_cache/
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

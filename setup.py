@@ -1,5 +1,6 @@
 """
 Copyright 2013 Gustav Arngarden
+Copyright 2025 Martin Alge <martin@alge.se>
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -22,13 +23,23 @@ with open('README.rst') as readme_file:
 setup(
     name='MongoDBProxy-official',
     packages=find_packages(),
-    version='0.1.0',
+    version='0.2.0',
     description='Proxy around MongoDB connection that automatically handles AutoReconnect exceptions.',
-    author='Gustav Arngarden',
+    author='Martin Alge',
+    author_email='martin@alge.se',
+    maintainer='Martin Alge',
+    maintainer_email='martin@alge.se',
     long_description=LONG_DESCRIPTION,
     classifiers=[
         'License :: OSI Approved :: Apache Software License',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
     ],
-    install_requires=['pymongo'],
-    url="https://github.com/arngarden/MongoDBProxy"
+    python_requires='>=3.6',
+    install_requires=['pymongo>=4.0,<5.0'],
+    test_suite='tests',
+    url="https://github.com/Alge/MongoDBProxy.git",
 )

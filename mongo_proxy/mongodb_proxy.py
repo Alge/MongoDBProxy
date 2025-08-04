@@ -1,5 +1,6 @@
 """
 Copyright 2013 Gustav Arngarden
+Copyright 2025 Martin Alge <martin@alge.se>
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -16,6 +17,7 @@ Copyright 2013 Gustav Arngarden
 
 import time
 import pymongo
+from pymongo import MongoClient
 
 
 def get_methods(*objs):
@@ -27,32 +29,18 @@ def get_methods(*objs):
     )
 
 
-try:
-    # will fail to import from older versions of pymongo
-    from pymongo import MongoClient, MongoReplicaSetClient
-except ImportError:
-    MongoClient, MongoReplicaSetClient = None, None
-
-try:
-    from pymongo import Connection, ReplicaSetConnection
-except ImportError:
-    Connection, ReplicaSetConnection = None, None
-
 EXECUTABLE_MONGO_METHODS = get_methods(pymongo.collection.Collection,
                                        pymongo.database.Database,
-                                       Connection,
-                                       ReplicaSetConnection,
-                                       MongoClient, MongoReplicaSetClient,
+                                       MongoClient,
                                        pymongo)
 
 
-def get_connection(obj):
+def get_client(obj):
     if isinstance(obj, pymongo.collection.Collection):
-        return obj.database.connection
+        return obj.database.client
     elif isinstance(obj, pymongo.database.Database):
-        return obj.connection
-    elif isinstance(obj, (Connection, ReplicaSetConnection,
-                          MongoClient, MongoReplicaSetClient)):
+        return obj.client
+    elif isinstance(obj, MongoClient):
         return obj
     else:
         return None
@@ -86,15 +74,15 @@ class Executable(object):
         while True:
             try:
                 return self.method(*args, **kwargs)
-            except pymongo.errors.AutoReconnect:
+            except (pymongo.errors.AutoReconnect, pymongo.errors.NotPrimaryError, pymongo.errors.NetworkTimeout, pymongo.errors.ServerSelectionTimeoutError):
                 end = time.time()
                 delta = end - start
                 if delta >= max_time:
                     if not self.disconnect_on_timeout or disconnected:
                         break
-                    conn = get_connection(self.method.__self__)
-                    if conn:
-                        conn.disconnect()
+                    client = get_client(self.method.__self__)
+                    if client:
+                        client.close()
                         disconnected = True
                         max_time *= 2
                         round = 2

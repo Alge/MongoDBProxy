@@ -1,5 +1,6 @@
 """
 Copyright 2015 Quantopian Inc.
+Copyright 2025 Martin Alge <martin@alge.se>
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -22,6 +23,9 @@ from pymongo.errors import (
     ExecutionTimeout,
     OperationFailure,
     WTimeoutError,
+    NotPrimaryError,
+    NetworkTimeout,
+    ServerSelectionTimeoutError
 )
 
 # How long we are willing to attempt to reconnect when the replicaset
@@ -30,10 +34,12 @@ MAX_RECONNECT_TIME = 60
 MAX_SLEEP = 5
 RECONNECT_INITIAL_DELAY = 1
 RETRYABLE_OPERATION_FAILURE_CLASSES = (
-    AutoReconnect,  # AutoReconnect is raised when the primary node fails
+    AutoReconnect,  # Also handles NotPrimaryError
     CursorNotFound,
     ExecutionTimeout,
     WTimeoutError,
+    NetworkTimeout,
+    ServerSelectionTimeoutError,
 )
 
 
@@ -59,10 +65,9 @@ class DurableCursor(object):
     def __init__(
             self,
             collection,
-            spec=None,
-            fields=None,
+            filter=None,
+            projection=None,
             sort=None,
-            slave_okay=True,
             hint=None,
             tailable=False,
             max_reconnect_time=MAX_RECONNECT_TIME,
@@ -73,10 +78,9 @@ class DurableCursor(object):
             **kwargs):
 
         self.collection = collection
-        self.spec = spec
-        self.fields = fields
+        self.filter = filter
+        self.projection = projection
         self.sort = sort
-        self.slave_okay = slave_okay
         self.hint = hint
         self.tailable = tailable
 
@@ -117,10 +121,9 @@ class DurableCursor(object):
             limit = 0
 
         cursor = self.collection.find(
-            spec=self.spec,
-            fields=self.fields,
+            filter=self.filter,
+            projection=self.projection,
             sort=self.sort,
-            slave_okay=self.slave_okay,
             tailable=self.tailable,
             skip=count,
             limit=limit,
@@ -162,7 +165,7 @@ class DurableCursor(object):
         except RETRYABLE_OPERATION_FAILURE_CLASSES as exc:
             self.logger.info(
                 "Got {!r}; attempting recovery. The query spec was: {}"
-                .format(exc, self.spec)
+                .format(exc, self.filter)
             )
             # Try to reload the cursor and continue where we left off
             next_record = self.try_reconnect(get_next=get_next)
@@ -174,7 +177,7 @@ class DurableCursor(object):
             if 'interrupted at shutdown' in str(exc.args[0]):
                 self.logger.info(
                     "Got {!r}; attempting recovery. The query spec was: {}"
-                    .format(exc, self.spec)
+                    .format(exc, self.filter)
                 )
                 next_record = self.try_reconnect(get_next=get_next)
                 self.logger.info("Cursor reload after {!r} successful."
@@ -209,7 +212,7 @@ class DurableCursor(object):
                 if time.time() - start > max_time:
                     if not self.disconnect_on_timeout or disconnected:
                         break
-                    self.cursor.collection.database.connection.disconnect()
+                    self.cursor.collection.database.client.close()
                     disconnected = True
                     interval = self.initial_reconnect_interval
                     round = 2
@@ -230,8 +233,10 @@ class DurableCursor(object):
         raise MongoReconnectFailure()
 
     def count(self, with_limit_and_skip=False):
-        return self._with_retry(
-            get_next=False,
-            f=self.cursor.count,
-            with_limit_and_skip=with_limit_and_skip,
-        )
+        kwargs = {}
+        if with_limit_and_skip:
+            if self.skip:
+                kwargs['skip'] = self.skip
+            if self.limit:
+                kwargs['limit'] = self.limit
+        return self.collection.count_documents(self.filter, **kwargs)

@@ -1,0 +1,14 @@
+MongoDBProxy
+Copyright 2013 Gustav Arngarden
+
+This product includes software developed by
+Gustav Arngarden (https://github.com/arngarden).
+
+==========================================================================
+
+This work is a derivative of the original MongoDBProxy.
+Modifications to support modern Python 3 and PyMongo 4 versions,
+along with a comprehensive test suite and other enhancements,
+were made by Martin Alge (https://github.com/Alge).
+
+Copyright 2025 Martin Alge
