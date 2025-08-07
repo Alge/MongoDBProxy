@@ -17,6 +17,7 @@ Copyright 2025 Martin Alge <martin@alge.se>
 
 import logging
 import time
+from pymongo.cursor import CursorType
 from pymongo.errors import (
     AutoReconnect,
     CursorNotFound,
@@ -34,33 +35,23 @@ MAX_RECONNECT_TIME = 60
 MAX_SLEEP = 5
 RECONNECT_INITIAL_DELAY = 1
 RETRYABLE_OPERATION_FAILURE_CLASSES = (
-    AutoReconnect,  # Also handles NotPrimaryError
+    AutoReconnect,
     CursorNotFound,
     ExecutionTimeout,
     WTimeoutError,
     NetworkTimeout,
     ServerSelectionTimeoutError,
 )
+ALL_RETRYABLE_EXCEPTIONS = RETRYABLE_OPERATION_FAILURE_CLASSES + (OperationFailure,)
+log = logging.getLogger(__name__)
 
 
 class MongoReconnectFailure(Exception):
-    """
-    Exception raised when we fail AutoReconnect more than
-    the allowed number of times.
-    """
     pass
 
 
 class DurableCursor(object):
-    """
-    Wrapper class around a pymongo cursor that detects and handles
-    replica set failovers and cursor timeouts.  Upon successful
-    reconnect this class automatically skips over previously returned
-    records, resuming iteration as though no error occurred.
-    """
-
-    # Replace this or override it in a subclass for different logging.
-    logger = logging.getLogger(__name__)
+    logger = log
 
     def __init__(
             self,
@@ -70,26 +61,21 @@ class DurableCursor(object):
             sort=None,
             hint=None,
             tailable=False,
-            max_reconnect_time=MAX_RECONNECT_TIME,
-            initial_reconnect_interval=RECONNECT_INITIAL_DELAY,
+            max_reconnect_time=60,
+            initial_reconnect_interval=1,
             skip=0,
             limit=0,
             disconnect_on_timeout=True,
             **kwargs):
 
         self.collection = collection
-        self.filter = filter
+        self.filter = filter or {}
         self.projection = projection
         self.sort = sort
         self.hint = hint
         self.tailable = tailable
-
-        # The number of times we attempt to reconnect to a replica set.
         self.max_reconnect_time = max_reconnect_time
-
-        # The amount of time, in seconds, between reconnect attempts.
         self.initial_reconnect_interval = initial_reconnect_interval
-
         self.counter = self.skip = skip
         self.limit = limit
         self.disconnect_on_timeout = disconnect_on_timeout
@@ -102,48 +88,47 @@ class DurableCursor(object):
 
     def fetch_cursor(self, count, cursor_kwargs):
         """
-        Gets a cursor for the options set in the object.
-
-        Used to both get the initial cursor and reloaded cursor.
-
-        The difference between initial load and reload is the
-        value of count.
-        count is 0 on initial load,
-        where as count > 0 is used during reload.
+        Gets a cursor for the options set in the object, using the
+        correct API for PyMongo 3.x.
         """
-        limit_is_zero = False  # as opposed to 0 meaning no limit
+        log.debug("DurableCursor: Entering fetch_cursor with count=%d, limit=%d, initial_skip=%d",
+                  count, self.limit, self.skip)
+
+        limit_is_zero = False
         if self.limit:
             limit = self.limit - (count - self.skip)
+            log.debug("DurableCursor: fetch_cursor calculated new limit=%d", limit)
             if limit <= 0:
                 limit = 1
                 limit_is_zero = True
         else:
             limit = 0
 
+        # For PyMongo 3.x, 'tailable' is controlled via cursor_type
+        cursor_type = CursorType.TAILABLE_AWAIT if self.tailable else CursorType.NON_TAILABLE
+
         cursor = self.collection.find(
             filter=self.filter,
             projection=self.projection,
             sort=self.sort,
-            tailable=self.tailable,
             skip=count,
             limit=limit,
-            hint=self.hint,
+            cursor_type=cursor_type,
             **cursor_kwargs
         )
+
+        # 'hint' is a separate method call on the cursor in PyMongo 3.x
+        if self.hint:
+            cursor.hint(self.hint)
+
         if limit_is_zero:
-            # we can't use 0, since that's no limit, so instead we set it to 1
-            # and then move the cursor forward by one element here
             next(cursor, None)
+
+        log.debug("DurableCursor: fetch_cursor returning new cursor.")
         return cursor
 
     def reload_cursor(self):
-        """
-        Reload our internal pymongo cursor with a new query.  Use
-        self.counter to skip the records we've already
-        streamed. Assuming the database remains unchanged we should be
-        able to call this method as many times as we want without
-        affecting the events we stream.
-        """
+        log.debug("DurableCursor: reload_cursor called. Current counter is %d.", self.counter)
         self.cursor = self.fetch_cursor(self.counter, self.kwargs)
 
     @property
@@ -151,92 +136,57 @@ class DurableCursor(object):
         return self.tailable and self.cursor.alive
 
     def __next__(self):
+        log.debug("DurableCursor: __next__ called. About to call _with_retry.")
         next_record = self._with_retry(get_next=True, f=lambda: next(self.cursor))
-        # Increment count before returning so we know how many records
-        # to skip if a failure occurs later.
         self.counter += 1
+        log.debug("DurableCursor: __next__ success. Counter is now %d.", self.counter)
         return next_record
 
     next = __next__
 
     def _with_retry(self, get_next, f, *args, **kwargs):
         try:
-            next_record = f(*args, **kwargs)
-        except RETRYABLE_OPERATION_FAILURE_CLASSES as exc:
-            self.logger.info(
-                "Got {!r}; attempting recovery. The query spec was: {}"
-                .format(exc, self.filter)
-            )
-            # Try to reload the cursor and continue where we left off
-            next_record = self.try_reconnect(get_next=get_next)
-            self.logger.info("Cursor reload after {!r} successful."
-                             .format(exc))
+            return f(*args, **kwargs)
+        except ALL_RETRYABLE_EXCEPTIONS as exc:
+            log.warning("DurableCursor: _with_retry caught exception: %r", exc)
 
-        except OperationFailure as exc:
-            # No special subclass for this:
-            if 'interrupted at shutdown' in str(exc.args[0]):
-                self.logger.info(
-                    "Got {!r}; attempting recovery. The query spec was: {}"
-                    .format(exc, self.filter)
+            if isinstance(exc, OperationFailure):
+                is_retryable_op_failure = (
+                    'interrupted at shutdown' in str(exc.args[0]) or
+                    exc.__class__ in RETRYABLE_OPERATION_FAILURE_CLASSES
                 )
-                next_record = self.try_reconnect(get_next=get_next)
-                self.logger.info("Cursor reload after {!r} successful."
-                                 .format(exc))
-            else:
-                raise
+                if not is_retryable_op_failure:
+                    log.error("DurableCursor: Unhandleable OperationFailure. Re-raising.")
+                    raise
 
-        return next_record
+            log.debug("DurableCursor: Exception is retryable. Calling try_reconnect.")
+            return self.try_reconnect(get_next=get_next)
 
     def try_reconnect(self, get_next=True):
-        """
-        Attempt to reconnect to our collection after a replicaset failover.
-        Returns a flag indicating whether the reconnect attempt was successful
-        along with the next record to return if applicable. This should only
-        be called when trying to recover from an AutoReconnect exception.
-        """
-        attempts = 0
-        round = 1
+        log.debug("DurableCursor: Entered try_reconnect.")
         start = time.time()
         interval = self.initial_reconnect_interval
-        disconnected = False
-        max_time = self.max_reconnect_time
 
         while True:
             try:
-                # Attempt to reload and get the next batch.
                 self.reload_cursor()
+                log.debug("DurableCursor: try_reconnect successfully reloaded cursor. Calling next().")
                 return next(self.cursor) if get_next else True
+            except RETRYABLE_OPERATION_FAILURE_CLASSES as e:
+                log.warning("DurableCursor: try_reconnect caught %r during inner loop.", e)
+                if time.time() - start > self.max_reconnect_time:
+                    log.error('DurableCursor: Reconnect timed out.')
+                    raise MongoReconnectFailure()
 
-            # Replica set hasn't come online yet.
-            except AutoReconnect:
-                if time.time() - start > max_time:
-                    if not self.disconnect_on_timeout or disconnected:
-                        break
-                    self.cursor.collection.database.client.close()
-                    disconnected = True
-                    interval = self.initial_reconnect_interval
-                    round = 2
-                    attempts = 0
-                    max_time *= 2
-                    self.logger.warning('Resetting clock for round 2 after '
-                                        'disconnecting')
-                delta = time.time() - start
-                self.logger.warning(
-                    "AutoReconnecting, try %d.%d, (%.1f seconds elapsed)" %
-                    (round, attempts, delta))
-                # Give the database time to reload between attempts.
+                log.debug("DurableCursor: Reconnecting... sleeping for %.1f seconds.", interval)
                 time.sleep(interval)
                 interval = min(interval * 2, MAX_SLEEP)
-                attempts += 1
-
-        self.logger.error('Replica set reconnect failed.')
-        raise MongoReconnectFailure()
 
     def count(self, with_limit_and_skip=False):
-        kwargs = {}
+        cursor = self.collection.find(self.filter)
         if with_limit_and_skip:
             if self.skip:
-                kwargs['skip'] = self.skip
+                cursor = cursor.skip(self.skip)
             if self.limit:
-                kwargs['limit'] = self.limit
-        return self.collection.count_documents(self.filter, **kwargs)
+                cursor = cursor.limit(self.limit)
+        return cursor.count(with_limit_and_skip=with_limit_and_skip)

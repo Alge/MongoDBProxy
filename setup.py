@@ -23,7 +23,7 @@ with open('README.rst') as readme_file:
 setup(
     name='MongoDBProxy-alge',
     packages=find_packages(),
-    version='0.2.0',
+    version='0.1.1',
     description='Proxy around MongoDB connection that automatically handles AutoReconnect exceptions.',
     author='Martin Alge',
     author_email='martin@alge.se',
@@ -39,7 +39,7 @@ setup(
         'Programming Language :: Python :: 3.9',
     ],
     python_requires='>=3.6',
-    install_requires=['pymongo>=4.0,<5.0'],
+    install_requires=['pymongo>=3.12,<4.0'],
     test_suite='tests',
     url="https://github.com/Alge/MongoDBProxy.git",
 )
