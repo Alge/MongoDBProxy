@@ -15,30 +15,22 @@ Usage::
     >>> safe_conn = MongoProxy(client)
     >>> safe_conn.blogs.posts.insert_one({'some': 'post'})  # Automatically handles AutoReconnect.
 
-
-**See here for more details:**
-`<http://www.arngarden.com/2013/04/29/handling-mongodb-autoreconnect-exceptions-in-python-using-a-proxy/>`_
-
-**Contributors**:
-
-- Gustav Arngarden (Original Author)
-- Martin Alge (`<https://github.com/Alge>`_)
-- Jonathan Kamens (`<https://github.com/jikamens>`_)
-- Michael Cetrulo (`<https://github.com/git2samus>`_)
-- Richard Frank (`<https://github.com/richafrank>`_)
-- David Lindquist (`<https://github.com/dlindquist>`_)
-
 Fork Information
 ----------------
 
-This is a modernized fork of Gustav Arngarden's original MongoDBProxy. The goal of this version is to provide support for modern environments (Python 3.6+ and PyMongo 4.x) and to include a test suite to ensure reliability.
+This is a modernized fork of Gustav Arngarden's original MongoDBProxy. The primary goal of this version is to provide a stable, well-tested proxy compatible with modern Python 3 environments while maintaining support for legacy MongoDB databases.
 
 Installation
 ------------
 
-pip install git+https://github.com/Alge/MongoDBProxy.git 
+To install the package with its testing dependencies, run:
+
+    pip install -e .[test]
+
 
 Compatibility
 --------------
 
-This library is compatible with Python 3.6+ and PyMongo 4.x.
+This library is compatible with **Python 3.6+** and **PyMongo 3.12+** (version < 4.0).
+
+This focus on PyMongo 3.x is a deliberate choice to ensure compatibility with older MongoDB server versions, such as MongoDB 3.4, which are not supported by PyMongo 4.x.
